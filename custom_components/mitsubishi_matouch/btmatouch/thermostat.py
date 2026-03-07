@@ -42,6 +42,7 @@ from .exceptions import (
     MAConnectionException,
     MAInternalException,
     MAResponseException,
+    MAControlRequestFailedException,
     MAAuthException,
     MAStateException,
     MATimeoutException,
@@ -569,7 +570,10 @@ class Thermostat:
 
         response_bytes = await self._async_write_request(request)
         response = _MAControlResponse.from_bytes(response_bytes)
-        # TODO: error check for success?
+        
+        if (response.unknown_1 != 0x01 or response.unknown_2 != 0x01):
+            raise MAControlRequestFailedException(f"Control request failed: unknown_1={response.unknown_1}, unknown_2={response.unknown_2}")
+        # TODO: do we need further checks here?
 
     def _crc_sum(self, frame: bytes) -> int:
         """Calculate frame CRC."""
