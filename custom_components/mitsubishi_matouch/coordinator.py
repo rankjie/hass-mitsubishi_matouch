@@ -11,7 +11,7 @@ from bleak.backends.device import BLEDevice
 
 from .btmatouch.const import MAOperationMode, MAFanMode, MAVaneMode
 from .btmatouch.thermostat import Status, Thermostat
-from .btmatouch.exceptions import MAException, MAAuthException
+from .btmatouch.exceptions import MAException, MAAuthException, MAControlRequestFailedException
 
 from .models import MAConfigEntry
 
@@ -82,30 +82,56 @@ class MACoordinator(DataUpdateCoordinator):
             # Note: asyncio.TimeoutError and aiohttp.ClientError are already
             # handled by the data update coordinator.
             async with self._thermostat as thermostat:
-                # Grab active context variables to limit data required to be fetched from API
-                # Note: using context is not required if there is no need or ability to limit
-                # data retrieved from API.
+                # Process pending control updates. Clear queued values only after
+                # successful write so transient failures can be retried.
                 if (heat_setpoint := self._target_heat_setpoint) is not None:
-                    self._target_heat_setpoint = None
-                    await thermostat.async_set_heat_setpoint(heat_setpoint)
+                    try:
+                        await thermostat.async_set_heat_setpoint(heat_setpoint)
+                        self._target_heat_setpoint = None
+                    except MAControlRequestFailedException:
+                        self._target_heat_setpoint = None
+                        raise
+
                 if (cool_setpoint := self._target_cool_setpoint) is not None:
-                    self._target_cool_setpoint = None
-                    await thermostat.async_set_cool_setpoint(cool_setpoint)
+                    try:
+                        await thermostat.async_set_cool_setpoint(cool_setpoint)
+                        self._target_cool_setpoint = None
+                    except MAControlRequestFailedException:
+                        self._target_cool_setpoint = None
+                        raise
+
                 if (operation_mode := self._target_operation_mode) is not None:
-                    self._target_operation_mode = None
-                    await thermostat.async_set_operation_mode(operation_mode)
+                    try:
+                        await thermostat.async_set_operation_mode(operation_mode)
+                        self._target_operation_mode = None
+                    except MAControlRequestFailedException:
+                        self._target_operation_mode = None
+                        raise
+
                 if (fan_mode := self._target_fan_mode) is not None:
-                    self._target_fan_mode = None
-                    await thermostat.async_set_fan_mode(fan_mode)
+                    try:
+                        await thermostat.async_set_fan_mode(fan_mode)
+                        self._target_fan_mode = None
+                    except MAControlRequestFailedException:
+                        self._target_fan_mode = None
+                        raise
+
                 if (vane_mode := self._target_vane_mode) is not None:
-                    self._target_vane_mode = None
-                    await thermostat.async_set_vane_mode(vane_mode)
+                    try:
+                        await thermostat.async_set_vane_mode(vane_mode)
+                        self._target_vane_mode = None
+                    except MAControlRequestFailedException:
+                        self._target_vane_mode = None
+                        raise
 
                 return await thermostat.async_get_status()
-        # except MAAuthException as ex:
+        except MAAuthException as ex:
+            raise UpdateFailed(f"Authentication failed: {ex}") from ex
         #     # Raising ConfigEntryAuthFailed will cancel future updates
         #     # and start a config flow with SOURCE_REAUTH (async_step_reauth)
         #     raise ConfigEntryAuthFailed from ex
+        except MAControlRequestFailedException as ex:
+            raise UpdateFailed(f"Control request failed: {ex}") from ex
         except MAException as ex:
             raise UpdateFailed(f"Error communicating with thermostat: {ex}") from ex
 
@@ -118,12 +144,24 @@ class MACoordinator(DataUpdateCoordinator):
 
         self.async_set_updated_data(replace(previous, **changes))
 
+    def _raise_if_control_request_failed(self) -> None:
+        """Raise control request failures from the latest refresh for service handling."""
+
+        last_exception = self.last_exception
+        if last_exception is None:
+            return
+
+        root_exception = last_exception.__cause__ or last_exception
+        if isinstance(root_exception, MAControlRequestFailedException):
+            raise root_exception
+
     async def async_set_heat_setpoint(self, temperature: float) -> None:
         """Sets the heat setpoint."""
 
         self._apply_optimistic_update(heat_setpoint=temperature)
         self._target_heat_setpoint = temperature
         await self.async_request_refresh()
+        self._raise_if_control_request_failed()
 
     async def async_set_cool_setpoint(self, temperature: float) -> None:
         """Sets the cool setpoint."""
@@ -131,6 +169,7 @@ class MACoordinator(DataUpdateCoordinator):
         self._apply_optimistic_update(cool_setpoint=temperature)
         self._target_cool_setpoint = temperature
         await self.async_request_refresh()
+        self._raise_if_control_request_failed()
 
     async def async_set_operation_mode(self, operation_mode: MAOperationMode) -> None:
         """Sets the operation mode."""
@@ -138,6 +177,7 @@ class MACoordinator(DataUpdateCoordinator):
         self._apply_optimistic_update(operation_mode=operation_mode)
         self._target_operation_mode = operation_mode
         await self.async_request_refresh()
+        self._raise_if_control_request_failed()
 
     async def async_set_fan_mode(self, fan_mode: MAFanMode) -> None:
         """Sets the fan mode."""
@@ -145,6 +185,7 @@ class MACoordinator(DataUpdateCoordinator):
         self._apply_optimistic_update(fan_mode=fan_mode)
         self._target_fan_mode = fan_mode
         await self.async_request_refresh()
+        self._raise_if_control_request_failed()
 
     async def async_set_vane_mode(self, vane_mode: MAVaneMode) -> None:
         """Sets the vane mode."""
@@ -152,3 +193,4 @@ class MACoordinator(DataUpdateCoordinator):
         self._apply_optimistic_update(vane_mode=vane_mode)
         self._target_vane_mode = vane_mode
         await self.async_request_refresh()
+        self._raise_if_control_request_failed()
