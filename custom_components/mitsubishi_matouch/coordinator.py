@@ -2,6 +2,7 @@
 
 import logging
 from datetime import timedelta
+from dataclasses import replace
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed, ConfigEntryAuthFailed
@@ -84,19 +85,19 @@ class MACoordinator(DataUpdateCoordinator):
                 # Grab active context variables to limit data required to be fetched from API
                 # Note: using context is not required if there is no need or ability to limit
                 # data retrieved from API.
-                if heat_setpoint := self._target_heat_setpoint:
+                if (heat_setpoint := self._target_heat_setpoint) is not None:
                     self._target_heat_setpoint = None
                     await thermostat.async_set_heat_setpoint(heat_setpoint)
-                if cool_setpoint := self._target_cool_setpoint:
+                if (cool_setpoint := self._target_cool_setpoint) is not None:
                     self._target_cool_setpoint = None
                     await thermostat.async_set_cool_setpoint(cool_setpoint)
-                if operation_mode := self._target_operation_mode:
+                if (operation_mode := self._target_operation_mode) is not None:
                     self._target_operation_mode = None
                     await thermostat.async_set_operation_mode(operation_mode)
-                if fan_mode := self._target_fan_mode:
+                if (fan_mode := self._target_fan_mode) is not None:
                     self._target_fan_mode = None
                     await thermostat.async_set_fan_mode(fan_mode)
-                if vane_mode := self._target_vane_mode:
+                if (vane_mode := self._target_vane_mode) is not None:
                     self._target_vane_mode = None
                     await thermostat.async_set_vane_mode(vane_mode)
 
@@ -108,32 +109,46 @@ class MACoordinator(DataUpdateCoordinator):
         except MAException as ex:
             raise UpdateFailed(f"Error communicating with thermostat: {ex}") from ex
 
+    def _apply_optimistic_update(self, **changes) -> None:
+        """Apply optimistic status changes to coordinator data."""
+
+        previous = self.data
+        if previous is None:
+            return
+
+        self.async_set_updated_data(replace(previous, **changes))
+
     async def async_set_heat_setpoint(self, temperature: float) -> None:
         """Sets the heat setpoint."""
 
+        self._apply_optimistic_update(heat_setpoint=temperature)
         self._target_heat_setpoint = temperature
         await self.async_request_refresh()
 
     async def async_set_cool_setpoint(self, temperature: float) -> None:
         """Sets the cool setpoint."""
 
+        self._apply_optimistic_update(cool_setpoint=temperature)
         self._target_cool_setpoint = temperature
         await self.async_request_refresh()
 
     async def async_set_operation_mode(self, operation_mode: MAOperationMode) -> None:
         """Sets the operation mode."""
 
+        self._apply_optimistic_update(operation_mode=operation_mode)
         self._target_operation_mode = operation_mode
         await self.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: MAFanMode) -> None:
         """Sets the fan mode."""
 
+        self._apply_optimistic_update(fan_mode=fan_mode)
         self._target_fan_mode = fan_mode
         await self.async_request_refresh()
 
     async def async_set_vane_mode(self, vane_mode: MAVaneMode) -> None:
         """Sets the vane mode."""
 
+        self._apply_optimistic_update(vane_mode=vane_mode)
         self._target_vane_mode = vane_mode
         await self.async_request_refresh()
