@@ -178,7 +178,7 @@ class _MAControlRequest(_MARequest):
 class _MAControlResponse(_MAResponse):
     """Thermostat control response.
 
-    succeeded: 00 00
+    succeeded: 01 01
     """
 
     unknown_1: int = csfield(Int8un)
