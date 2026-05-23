@@ -140,29 +140,51 @@ class Thermostat:
 
         self._message_id = 0
 
-        try:
-            self._conn = await establish_connection(
-                BleakClient,
-                self._ble_device,
-                self._mac_address,
-                disconnected_callback=self._on_disconnected,
-                max_attempts=self._max_connect_retries
-            )
+        last_exc: Exception | None = None
+        for attempt in range(self._max_connect_retries):
+            try:
+                self._conn = await establish_connection(
+                    BleakClient,
+                    self._ble_device,
+                    self._mac_address,
+                    disconnected_callback=self._on_disconnected,
+                    max_attempts=self._max_connect_retries,
+                )
 
-            _LOGGER.debug("[%s] Connected!", self._mac_address)
+                _LOGGER.debug("[%s] Connected!", self._mac_address)
 
-            await self._conn.start_notify(
-                _MACharacteristic.NOTIFY, self._on_message_received
-            )
+                # start_notify and the initial characteristic reads can fail with
+                # BleakError / DBus errors if the peripheral drops the link
+                # between connect and the next GATT op (e.g. BlueZ raises
+                # "Method AcquireNotify ... doesn't exist" when the object path
+                # is gone). Wrap the whole post-connect block so we don't lose a
+                # polling cycle on a transient drop.
+                await self._conn.start_notify(
+                    _MACharacteristic.NOTIFY, self._on_message_received
+                )
 
-            if self._firmware_version is None or self._software_version is None:
-                self._firmware_version = await self._async_read_char_str(_MACharacteristic.FIRMWARE_VERSION)
-                self._software_version = await self._async_read_char_str(_MACharacteristic.SOFTWARE_VERSION)
-                _LOGGER.debug("[%s] Firmware version: %s, software version: %s", self._mac_address, self._firmware_version, self._software_version)
-        except BleakError as ex:
-            raise MAConnectionException(f"Could not connect to the device: {ex}") from ex
-        except TimeoutError as ex:
-            raise MATimeoutException("Timeout during connection attempt") from ex
+                if self._firmware_version is None or self._software_version is None:
+                    self._firmware_version = await self._async_read_char_str(_MACharacteristic.FIRMWARE_VERSION)
+                    self._software_version = await self._async_read_char_str(_MACharacteristic.SOFTWARE_VERSION)
+                    _LOGGER.debug("[%s] Firmware version: %s, software version: %s", self._mac_address, self._firmware_version, self._software_version)
+                return
+            except BleakError as ex:
+                last_exc = ex
+                _LOGGER.debug("[%s] connect attempt %d/%d failed: %s",
+                              self._mac_address, attempt + 1, self._max_connect_retries, ex)
+                if self._conn is not None:
+                    try:
+                        if self._conn.is_connected:
+                            await self._conn.disconnect()
+                    except Exception:
+                        pass
+                    self._conn = None
+                if attempt < self._max_connect_retries - 1:
+                    await asyncio.sleep(0.5)
+            except TimeoutError as ex:
+                raise MATimeoutException("Timeout during connection attempt") from ex
+
+        raise MAConnectionException(f"Could not connect to the device after {self._max_connect_retries} attempts: {last_exc}") from last_exc
 
     async def async_disconnect(self) -> None:
         """Disconnect from the thermostat.

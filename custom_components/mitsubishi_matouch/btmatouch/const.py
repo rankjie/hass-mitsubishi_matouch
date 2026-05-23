@@ -22,7 +22,7 @@ MA_MIN_TEMP = 16.0
 MA_MAX_TEMP = 31.0
 
 """The default maximum connect retries."""
-DEFAULT_MAX_CONNECT_RETRIES = 3
+DEFAULT_MAX_CONNECT_RETRIES = 6
 
 """The default command timeout in seconds."""
 DEFAULT_COMMAND_TIMEOUT = 5

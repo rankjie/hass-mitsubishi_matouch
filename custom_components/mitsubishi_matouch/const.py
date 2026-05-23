@@ -51,4 +51,4 @@ HA_TO_MA_FAN: dict[str, MAFanMode] = {
     "quiet": MAFanMode.QUIET,
 }
 
-DEFAULT_SCAN_INTERVAL = 10 # seconds
+DEFAULT_SCAN_INTERVAL = 30 # seconds
