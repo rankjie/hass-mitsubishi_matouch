@@ -33,9 +33,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MAConfigEntry) -> bool:
     if device is None:
         raise ConfigEntryNotReady(f"MA Touch thermostat '{mac_address}' could not be found")
 
+    persistent_connection = bool(entry.options.get("persistent_connection", False))
+
     config = MAConfig(
         mac_address=mac_address,
-        pin=pin
+        pin=pin,
+        persistent_connection=persistent_connection,
     )
 
     coordinator = MACoordinator(
@@ -43,7 +46,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MAConfigEntry) -> bool:
         config_entry=entry,
         pin=config.pin,
         scan_interval=config.scan_interval,
-        ble_device=device
+        ble_device=device,
+        persistent_connection=config.persistent_connection,
     )
 
     entry.runtime_data = MAConfigEntryRuntimeData(
@@ -61,6 +65,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MAConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     entry.async_on_unload(entry.add_update_listener(update_listener))
+    # Persistent-mode sessions outlive __aexit__; this hook lets HA drive a
+    # clean logout+disconnect when the entry is unloaded (reload, restart,
+    # uninstall). Always registered — async_shutdown is a no-op in
+    # short-connection mode.
+    entry.async_on_unload(coordinator.async_shutdown_persistent)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

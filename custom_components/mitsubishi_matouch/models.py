@@ -15,6 +15,7 @@ class MAConfig:
     mac_address: str
     pin: str
     scan_interval: int = DEFAULT_SCAN_INTERVAL
+    persistent_connection: bool = False
 
 
 @dataclass(slots=True)

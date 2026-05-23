@@ -2,17 +2,30 @@
 
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_MAC, CONF_PIN
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import format_mac
 
 from .const import DOMAIN
 from .schemas import SCHEMA_BLUETOOTH, SCHEMA_USER
 
 
+CONF_PERSISTENT_CONNECTION = "persistent_connection"
+
+
 class MAConfigFlow(ConfigFlow, domain=DOMAIN):
     """Config flow for Mitsubishi MA Touch thermostats."""
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow handler."""
+
+        return MAOptionsFlow()
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -97,6 +110,37 @@ class MAConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title=self._discovery_info.name or f"MA Touch {mac_address}",
             data={"pin": pin},
+        )
+
+
+class MAOptionsFlow(OptionsFlow):
+    """Options flow for the Mitsubishi MA Touch integration.
+
+    Currently exposes one toggle:
+      - persistent_connection: when on, the integration keeps a single
+        long-lived BLE link to the panel (Android-style) instead of doing a
+        full connect+login+logout+disconnect cycle every scan_interval. Off
+        by default for backwards compatibility with upstream behavior.
+
+    HA reloads the entry on options save (see update_listener in __init__),
+    so toggling the switch takes effect on the next refresh.
+    """
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Show / handle the options form."""
+
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self.config_entry.options.get(CONF_PERSISTENT_CONNECTION, False)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PERSISTENT_CONNECTION, default=current): bool,
+                }
+            ),
         )
 
 

@@ -64,6 +64,7 @@ class Thermostat:
         max_connect_retries: int = DEFAULT_MAX_CONNECT_RETRIES,
         command_timeout: int = DEFAULT_COMMAND_TIMEOUT,
         response_timeout: int = DEFAULT_RESPONSE_TIMEOUT,
+        persistent_connection: bool = False,
     ):
         """Initialize the thermostat.
 
@@ -75,6 +76,14 @@ class Thermostat:
             connection_timeout (int, optional): The connection timeout in seconds. Defaults to DEFAULT_CONNECTION_TIMEOUT.
             command_timeout (int, optional): The command timeout in seconds. Defaults to DEFAULT_COMMAND_TIMEOUT.
             response_timeout (int, optional): The response waiting timeout in seconds. Defaults to DEFAULT_RESPONSE_TIMEOUT.
+            persistent_connection (bool, optional): If True, keep the BLE link
+                open across context-manager scopes (Android-style long
+                connection). Each polling cycle then skips connect+login when a
+                live session already exists, and only re-establishes if the
+                peripheral has dropped the link. async_shutdown() must be called
+                on integration unload to send the logout sequence and close. If
+                False (default), each scope does the full connect-login-op-
+                logout-disconnect dance.
         """
 
         self._mac_address = ble_device.address
@@ -83,6 +92,7 @@ class Thermostat:
         self._max_connect_retries = max_connect_retries
         self._command_timeout = command_timeout
         self._response_timeout = response_timeout
+        self._persistent_connection = persistent_connection
 
         self._firmware_version: str | None = None
         self._software_version: str | None = None
@@ -91,6 +101,11 @@ class Thermostat:
         self._connection_lock = asyncio.Lock()
         self._gatt_lock = asyncio.Lock()
         self._response_future: asyncio.Future[bytes] | None = None
+        # Tracked separately from is_connected: the BLE link can be live but we
+        # may not have completed the auth handshake yet (or it expired on the
+        # peripheral side). In persistent mode we replay the login sequence
+        # when reconnecting.
+        self._is_authenticated = False
 
         self._message_id = 0
         self._receive_length = 0
@@ -232,6 +247,8 @@ class Thermostat:
         request = _MAAuthenticatedRequest(message_type=_MAMessageType.UNKNOWN_2, request_flag=0x01, pin=pin)
         await self._async_write_request(request)
 
+        self._is_authenticated = True
+
     async def async_logout(self, pin: int) -> None:
         """Unknown messages at end of connection.
 
@@ -254,6 +271,8 @@ class Thermostat:
         # not sure what this does yet, but seems to be required
         request = _MAAuthenticatedRequest(message_type=_MAMessageType.UNKNOWN_5, request_flag=0x01, pin=pin)
         await self._async_write_request(request)
+
+        self._is_authenticated = False
 
     async def async_get_status(self) -> Status:
         """Query the latest status.
@@ -416,7 +435,11 @@ class Thermostat:
     async def __aenter__(self) -> Self:
         """Async context manager enter.
 
-        Connects to the thermostat. After connecting, authentication will be performed.
+        In short-connection mode (default) this opens a fresh BLE link and
+        authenticates. In persistent-connection mode it reuses an existing
+        live + authenticated session if there is one, only (re)connecting and
+        replaying the login handshake when the link is down or the auth state
+        was cleared (e.g. by a disconnect callback).
 
         Raises:
             MAStateException: If the thermostat is already connected.
@@ -428,6 +451,19 @@ class Thermostat:
         await self._connection_lock.acquire()
 
         try:
+            if self._persistent_connection and self.is_connected and self._is_authenticated:
+                # Hot path: reuse the live session, skip connect + login.
+                return self
+
+            if self.is_connected and not self._is_authenticated:
+                # Link is up but auth state was cleared (only happens after a
+                # successful logout — disconnect callbacks tear the link down
+                # too). Drop the link so we start clean.
+                try:
+                    await self.async_disconnect()
+                except Exception:
+                    pass
+
             await self.async_connect()
             await self.async_login(pin=self._pin)
         except Exception as ex:
@@ -449,7 +485,10 @@ class Thermostat:
     ) -> None:
         """Async context manager exit.
 
-        Disconnects from the thermostat. Before disconnection all pending futures will be cancelled.
+        Short-connection mode: logout + disconnect on success, drop the link
+        on error. Persistent-connection mode: keep the session open across
+        polling cycles; only tear down on error so the next cycle starts
+        fresh. Persistent sessions are finally closed by async_shutdown().
 
         Raises:
             MAStateException: If the thermostat is not connected.
@@ -458,6 +497,18 @@ class Thermostat:
         """
 
         try:
+            if self._persistent_connection:
+                if exc_value is not None and self.is_connected:
+                    # Something went wrong inside the scope: drop the link so
+                    # the next __aenter__ rebuilds it from scratch instead of
+                    # inheriting a possibly-wedged session.
+                    try:
+                        await self.async_disconnect()
+                    except Exception:
+                        pass
+                return
+
+            # Short-connection mode (default upstream behavior).
             if self.is_connected:
                 if exc_value is not None: # ignore exceptions if we already have one coming
                     try:
@@ -469,6 +520,35 @@ class Thermostat:
                     await self.async_disconnect()
         finally:
             self._connection_lock.release()
+
+    async def async_shutdown(self) -> None:
+        """Cleanly close a persistent session on integration unload.
+
+        In short-connection mode this is a no-op (nothing is ever left open
+        between scopes). In persistent mode it serializes with any in-flight
+        polling cycle and sends the proper logout sequence before dropping the
+        link, so the peripheral doesn't carry a stale auth state.
+        """
+
+        if not self._persistent_connection:
+            return
+
+        async with self._connection_lock:
+            if not self.is_connected:
+                self._is_authenticated = False
+                return
+            try:
+                if self._is_authenticated:
+                    try:
+                        await self.async_logout(pin=self._pin)
+                    except Exception as ex:
+                        _LOGGER.debug("[%s] logout during shutdown failed: %s", self._mac_address, ex)
+            finally:
+                try:
+                    await self.async_disconnect()
+                except Exception as ex:
+                    _LOGGER.debug("[%s] disconnect during shutdown failed: %s", self._mac_address, ex)
+                self._is_authenticated = False
 
     async def _async_read_char_str(self, uuid: str) -> str:
         return "".join(map(chr, await self._async_read_char(uuid)))
@@ -606,6 +686,10 @@ class Thermostat:
         """Handle disconnection from the thermostat."""
 
         _LOGGER.debug("[%s] Disconnected.", self._mac_address)
+
+        # A dropped link invalidates auth — in persistent mode this is what
+        # tells __aenter__ to redo the login handshake on the next cycle.
+        self._is_authenticated = False
 
         if self._response_future is not None and not self._response_future.done():
             exception = MAConnectionException("Connection closed while awaiting response")

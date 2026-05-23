@@ -21,7 +21,15 @@ _LOGGER = logging.getLogger(__name__)
 class MACoordinator(DataUpdateCoordinator):
     """Mitsubishi MA Touch data update coordinator."""
 
-    def __init__(self, hass: HomeAssistant, config_entry: MAConfigEntry, pin: str, scan_interval: int, ble_device: BLEDevice):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: MAConfigEntry,
+        pin: str,
+        scan_interval: int,
+        ble_device: BLEDevice,
+        persistent_connection: bool = False,
+    ):
         """Initialize the coordinator."""
 
         super().__init__(
@@ -41,6 +49,7 @@ class MACoordinator(DataUpdateCoordinator):
         self._thermostat = Thermostat(
             pin=int(pin, 16),
             ble_device=ble_device,
+            persistent_connection=persistent_connection,
         )
         self._target_heat_setpoint: float | None = None
         self._target_cool_setpoint: float | None = None
@@ -59,6 +68,16 @@ class MACoordinator(DataUpdateCoordinator):
         """Get the thermostat software version."""
 
         return self._thermostat.software_version
+
+    async def async_shutdown_persistent(self) -> None:
+        """Cleanly close a persistent session on entry unload.
+
+        Registered via entry.async_on_unload in __init__.async_setup_entry so
+        HA flushes the BLE logout + disconnect before the coordinator is torn
+        down. No-op when persistent_connection is False.
+        """
+
+        await self._thermostat.async_shutdown()
 
     async def _async_setup(self) -> None:
         """Set up the coordinator

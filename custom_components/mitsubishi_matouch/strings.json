@@ -24,6 +24,19 @@
       "invalid_pin": "Invalid PIN"
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Mitsubishi MA Touch options",
+        "data": {
+          "persistent_connection": "Persistent connection (Android-style)"
+        },
+        "data_description": {
+          "persistent_connection": "Keep one long-lived BLE link to the panel and reuse it across polling cycles, like the official Android app. Reduces login/logout chatter and BLE setup overhead, at the cost of holding a connection slot continuously. Off by default (each poll is a full connect+login+logout+disconnect)."
+        }
+      }
+    }
+  },
   "entity": {
     "climate": {
       "matouch": {
