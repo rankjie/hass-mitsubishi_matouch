@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.const import Platform
 from homeassistant.exceptions import ConfigEntryNotReady
 
+from .const import DEFAULT_SCAN_INTERVAL
 from .models import MAConfigEntry, MAConfig, MAConfigEntryRuntimeData
 from .coordinator import MACoordinator
 
@@ -34,10 +35,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MAConfigEntry) -> bool:
         raise ConfigEntryNotReady(f"MA Touch thermostat '{mac_address}' could not be found")
 
     persistent_connection = bool(entry.options.get("persistent_connection", False))
+    scan_interval = int(entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL))
 
     config = MAConfig(
         mac_address=mac_address,
         pin=pin,
+        scan_interval=scan_interval,
         persistent_connection=persistent_connection,
     )
 

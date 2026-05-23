@@ -10,11 +10,20 @@ from homeassistant.const import CONF_MAC, CONF_PIN
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import format_mac
 
-from .const import DOMAIN
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .schemas import SCHEMA_BLUETOOTH, SCHEMA_USER
 
 
 CONF_PERSISTENT_CONNECTION = "persistent_connection"
+CONF_SCAN_INTERVAL = "scan_interval"
+
+# Lower bound matters for persistent_connection mode: the MA Touch panel
+# closes idle BLE connections after roughly 10-15s, so polling slower than
+# that defeats the "keep the link alive" benefit. We don't enforce that
+# coupling here (user might want short-connection mode with longer
+# intervals), just keep a sane absolute floor.
+MIN_SCAN_INTERVAL = 5
+MAX_SCAN_INTERVAL = 600
 
 
 class MAConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -116,14 +125,17 @@ class MAConfigFlow(ConfigFlow, domain=DOMAIN):
 class MAOptionsFlow(OptionsFlow):
     """Options flow for the Mitsubishi MA Touch integration.
 
-    Currently exposes one toggle:
-      - persistent_connection: when on, the integration keeps a single
-        long-lived BLE link to the panel (Android-style) instead of doing a
-        full connect+login+logout+disconnect cycle every scan_interval. Off
-        by default for backwards compatibility with upstream behavior.
+    Exposes:
+      - persistent_connection: keep one long-lived BLE link to the panel
+        (Android-style) instead of full connect+login+logout+disconnect per
+        scan. Off by default.
+      - scan_interval: polling period in seconds. The MA Touch panel itself
+        drops idle connections after ~10-15s, so for persistent_connection
+        to actually save GATT traffic you want this <= panel idle (try 8s).
+        Default 30s matches upstream and is fine for short-connection mode.
 
-    HA reloads the entry on options save (see update_listener in __init__),
-    so toggling the switch takes effect on the next refresh.
+    HA reloads the entry on save (see update_listener in __init__) so the
+    toggle / new interval takes effect on the next refresh.
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -132,13 +144,19 @@ class MAOptionsFlow(OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current = self.config_entry.options.get(CONF_PERSISTENT_CONNECTION, False)
+        opts = self.config_entry.options
+        current_persistent = opts.get(CONF_PERSISTENT_CONNECTION, False)
+        current_interval = opts.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_PERSISTENT_CONNECTION, default=current): bool,
+                    vol.Required(CONF_PERSISTENT_CONNECTION, default=current_persistent): bool,
+                    vol.Required(CONF_SCAN_INTERVAL, default=current_interval): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
+                    ),
                 }
             ),
         )
