@@ -58,15 +58,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: MAConfigEntry) -> bool:
         coordinator=coordinator
     )
 
-    # Fetch initial data so we have data when entities subscribe
-    #
-    # If the refresh fails, async_config_entry_first_refresh will
-    # raise ConfigEntryNotReady and setup will try again later
-    #
-    # If you do not want to retry setup on failure, use
-    # coordinator.async_refresh() instead
-    await coordinator.async_config_entry_first_refresh()
-
     entry.async_on_unload(entry.add_update_listener(update_listener))
     # Persistent-mode sessions outlive __aexit__; this hook lets HA drive a
     # clean logout+disconnect when the entry is unloaded (reload, restart,
@@ -75,6 +66,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MAConfigEntry) -> bool:
     entry.async_on_unload(coordinator.async_shutdown_persistent)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_create_background_task(
+        hass,
+        coordinator.async_refresh(),
+        f"Mitsubishi MA Touch initial refresh {mac_address}",
+    )
     return True
 
 

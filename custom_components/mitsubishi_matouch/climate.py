@@ -99,11 +99,28 @@ class MAClimate(CoordinatorEntity[MACoordinator], ClimateEntity):
             hw_version=coordinator.firmware_version,
         )
 
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+
+        return self.coordinator.data is not None and super().available
+
+    def _require_status(self):
+        """Return current status or raise a service error."""
+
+        status = self.coordinator.data
+        if status is None:
+            raise ServiceValidationError("Mitsubishi MA Touch status is not available yet")
+        return status
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
 
         status = self.coordinator.data
+        if status is None:
+            super()._handle_coordinator_update()
+            return
 
         match status.operation_mode:
             case MAOperationMode.AUTO:
@@ -140,9 +157,9 @@ class MAClimate(CoordinatorEntity[MACoordinator], ClimateEntity):
     def _get_current_hvac_action(self) -> HVACAction:
         """Return the current hvac action."""
 
-        status = self.coordinator.data
+        status = self._require_status()
 
-        if status is None or status.operation_mode is MAOperationMode.OFF:
+        if status.operation_mode is MAOperationMode.OFF:
             return HVACAction.OFF
 
         match status.operation_mode:
@@ -160,7 +177,7 @@ class MAClimate(CoordinatorEntity[MACoordinator], ClimateEntity):
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
 
-        status = self.coordinator.data
+        status = self._require_status()
 
         try:
             if temperature := kwargs.get(ATTR_TEMPERATURE):
@@ -183,6 +200,8 @@ class MAClimate(CoordinatorEntity[MACoordinator], ClimateEntity):
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target HVAC mode."""
 
+        self._require_status()
+
         try:
             await self.coordinator.async_set_operation_mode(HA_TO_MA_HVAC[hvac_mode])
         except MAException as ex:
@@ -191,6 +210,8 @@ class MAClimate(CoordinatorEntity[MACoordinator], ClimateEntity):
     async def async_set_fan_mode(self, fan_mode) -> None:
         """Set new target fan mode."""
 
+        self._require_status()
+
         try:
             await self.coordinator.async_set_fan_mode(HA_TO_MA_FAN[fan_mode])
         except MAException as ex:
@@ -198,6 +219,8 @@ class MAClimate(CoordinatorEntity[MACoordinator], ClimateEntity):
 
     async def async_set_swing_mode(self, swing_mode) -> None:
         """Set new target swing operation."""
+
+        self._require_status()
 
         try:
             vane_mode = MAVaneMode.SWING if swing_mode == SWING_ON else MAVaneMode.AUTO

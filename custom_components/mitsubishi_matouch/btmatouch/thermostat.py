@@ -163,7 +163,7 @@ class Thermostat:
                     self._ble_device,
                     self._mac_address,
                     disconnected_callback=self._on_disconnected,
-                    max_attempts=self._max_connect_retries,
+                    max_attempts=1,
                 )
 
                 _LOGGER.debug("[%s] Connected!", self._mac_address)
