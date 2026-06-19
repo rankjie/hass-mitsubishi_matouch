@@ -111,6 +111,12 @@ class Thermostat:
         self._receive_length = 0
         self._receive_buffer = bytes(0)
 
+    def _reset_receive_state(self) -> None:
+        """Clear any partially received BLE notification frame."""
+
+        self._receive_length = 0
+        self._receive_buffer = bytes(0)
+
     @property
     def is_connected(self) -> bool:
         """Check if the thermostat is connected.
@@ -154,6 +160,7 @@ class Thermostat:
         _LOGGER.debug("[%s] Connecting...", self._mac_address)
 
         self._message_id = 0
+        self._reset_receive_state()
 
         last_exc: Exception | None = None
         for attempt in range(self._max_connect_retries):
@@ -214,6 +221,7 @@ class Thermostat:
 
         if not self.is_connected:
             _LOGGER.warning("[%s] No need to disconnect - not connected", self._mac_address)
+            self._reset_receive_state()
             return
 
         try:
@@ -224,6 +232,8 @@ class Thermostat:
             raise MAConnectionException("Could not disconnect from the device") from ex
         except TimeoutError as ex:
             raise MATimeoutException("Timeout during disconnection") from ex
+        finally:
+            self._reset_receive_state()
 
     async def async_login(self, pin: int) -> None:
         """Authentication, etc via unknown messages.
@@ -616,9 +626,11 @@ class Thermostat:
                     await self._conn.write_gatt_char(_MACharacteristic.WRITE, part, response=False)
             except BleakError as ex:
                 self._response_future = None
+                self._reset_receive_state()
                 raise MARequestException(f"Error during request write: {ex}") from ex
             except TimeoutError as ex:
                 self._response_future = None
+                self._reset_receive_state()
                 raise MATimeoutException("Timeout during request write") from ex
 
         try:
@@ -638,8 +650,10 @@ class Thermostat:
                 case _:
                     raise MAResponseException(f"Failure result received: {response_header.result}")
         except TimeoutError as ex:
+            self._reset_receive_state()
             raise MATimeoutException("Timeout while awaiting response") from ex
         except StreamError as ex:
+            self._reset_receive_state()
             raise MAResponseException(f"Failed to parse response header: {ex}") from ex
         finally:
             self._response_future = None
@@ -690,6 +704,7 @@ class Thermostat:
         # A dropped link invalidates auth — in persistent mode this is what
         # tells __aenter__ to redo the login handshake on the next cycle.
         self._is_authenticated = False
+        self._reset_receive_state()
 
         if self._response_future is not None and not self._response_future.done():
             exception = MAConnectionException("Connection closed while awaiting response")
@@ -712,12 +727,20 @@ class Thermostat:
         else:
             self._receive_buffer += data_bytes
 
+        if len(self._receive_buffer) > self._receive_length:
+            receive_length = self._receive_length
+            actual_length = len(self._receive_buffer)
+            self._reset_receive_state()
+            raise MAInternalException(
+                f"Received message longer than expected: {actual_length} > {receive_length}"
+            )
+
         if len(self._receive_buffer) != self._receive_length:
             return
 
-        self._receive_length = 0
         payload = self._receive_buffer[1:-2]
         crc = self._receive_buffer[:2]
+        self._reset_receive_state()
 
         # TODO: check checksum
 

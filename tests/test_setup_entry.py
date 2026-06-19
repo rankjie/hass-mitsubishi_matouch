@@ -4,7 +4,11 @@ import asyncio
 import importlib
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def _load_integration(monkeypatch):
