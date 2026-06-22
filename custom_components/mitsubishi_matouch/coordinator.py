@@ -11,11 +11,20 @@ from bleak.backends.device import BLEDevice
 
 from .btmatouch.const import MAOperationMode, MAFanMode, MAVaneMode
 from .btmatouch.thermostat import Status, Thermostat
-from .btmatouch.exceptions import MAException, MAAuthException, MAControlRequestFailedException
+from .btmatouch.exceptions import (
+    MAException,
+    MAAuthException,
+    MAConnectionException,
+    MAControlRequestFailedException,
+    MATimeoutException,
+)
 
 from .models import MAConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+TRANSIENT_FAILURES_BEFORE_UNAVAILABLE = 3
+TRANSIENT_COMMUNICATION_ERRORS = (MAConnectionException, MATimeoutException)
 
 
 class MACoordinator(DataUpdateCoordinator):
@@ -51,11 +60,13 @@ class MACoordinator(DataUpdateCoordinator):
             ble_device=ble_device,
             persistent_connection=persistent_connection,
         )
+        self._mac_address = ble_device.address
         self._target_heat_setpoint: float | None = None
         self._target_cool_setpoint: float | None = None
         self._target_operation_mode: MAOperationMode | None = None
         self._target_fan_mode: MAFanMode | None = None
         self._target_vane_mode: MAVaneMode | None = None
+        self._consecutive_transient_failures = 0
 
     @property
     def firmware_version(self) ->  str | None:
@@ -95,6 +106,8 @@ class MACoordinator(DataUpdateCoordinator):
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
+
+        had_pending_control_updates = self._has_pending_control_updates()
 
         try:
             # Note: asyncio.TimeoutError and aiohttp.ClientError are already
@@ -143,6 +156,7 @@ class MACoordinator(DataUpdateCoordinator):
                         raise
 
                 status = await thermostat.async_get_status()
+                self._consecutive_transient_failures = 0
                 return self._apply_pending_targets_to_status(status)
         except MAAuthException as ex:
             raise UpdateFailed(f"Authentication failed: {ex}") from ex
@@ -152,7 +166,51 @@ class MACoordinator(DataUpdateCoordinator):
         except MAControlRequestFailedException as ex:
             raise UpdateFailed(f"Control request failed: {ex}") from ex
         except MAException as ex:
+            if previous_status := self._previous_status_for_transient_failure(
+                ex,
+                had_pending_control_updates=had_pending_control_updates,
+            ):
+                return previous_status
             raise UpdateFailed(f"Error communicating with thermostat: {ex}") from ex
+
+    def _has_pending_control_updates(self) -> bool:
+        """Return whether this refresh is carrying a queued control write."""
+
+        return (
+            self._target_heat_setpoint is not None
+            or self._target_cool_setpoint is not None
+            or self._target_operation_mode is not None
+            or self._target_fan_mode is not None
+            or self._target_vane_mode is not None
+        )
+
+    def _previous_status_for_transient_failure(
+        self,
+        ex: MAException,
+        *,
+        had_pending_control_updates: bool,
+    ) -> Status | None:
+        """Keep the entity available through short-lived BLE polling drops."""
+
+        if had_pending_control_updates:
+            return None
+        if not isinstance(ex, TRANSIENT_COMMUNICATION_ERRORS):
+            return None
+        if self.data is None:
+            return None
+
+        self._consecutive_transient_failures += 1
+        if self._consecutive_transient_failures >= TRANSIENT_FAILURES_BEFORE_UNAVAILABLE:
+            return None
+
+        _LOGGER.warning(
+            "Transient communication error fetching %s data; keeping previous status (%d/%d tolerated): %s",
+            getattr(self, "_mac_address", "thermostat"),
+            self._consecutive_transient_failures,
+            TRANSIENT_FAILURES_BEFORE_UNAVAILABLE - 1,
+            ex,
+        )
+        return self.data
 
     def _apply_optimistic_update(self, **changes) -> None:
         """Apply optimistic status changes to coordinator data."""
